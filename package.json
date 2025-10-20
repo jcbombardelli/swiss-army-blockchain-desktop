@@ -1,0 +1,35 @@
+{
+  "name": "app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev-https": "cross-env HTTPS=true vite",
+    "dev-tauri": "tauri dev",
+    "dev-tauri-https": "cross-env HTTPS=true tauri dev",
+    "build": "vue-tsc --noEmit && vite build",
+    "build-tauri": "tauri build",
+    "preview": "vite preview",
+    "preview-https": "cross-env HTTPS=true vite preview",
+    "generate-certs": "node scripts/generate-certs.cjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "vue": "^3.5.13",
+    "vue-router": "^4.2.5",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "ethers": "^6.8.0",
+    "web3": "^4.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "vue-tsc": "^2.1.10",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^20.8.0",
+    "cross-env": "^7.0.3"
+  }
+}
