@@ -299,10 +299,11 @@ export class BlockchainService {
 
       // Assinar com Ledger usando signPersonalMessage
       let result;
+      const messageHashBuffer = Buffer.from(messageHash);
       try {
         result = await this.ledgerApp.signPersonalMessage(
           "44'/60'/0'/0/0",
-          messageHash
+          messageHashBuffer
         );
       } catch (signError: any) {
         console.error('Erro na assinatura:', signError);
@@ -320,14 +321,16 @@ export class BlockchainService {
         throw new Error('Resposta vazia da Ledger');
       }
       
-      if (!result.signature) {
-        throw new Error('Assinatura não encontrada na resposta da Ledger');
+       if (!result.r || !result.s || typeof result.v === 'undefined') {
+        throw new Error('Assinatura incompleta recebida da Ledger');
       }
-      
-      // Verificar se a assinatura tem o formato correto
-      if (typeof result.signature !== 'string' || result.signature.length === 0) {
-        throw new Error('Assinatura inválida recebida da Ledger');
-      }
+
+      // Concatenar r + s + v para formar a assinatura
+      const signature = 
+        result.r +
+        result.s +
+        result.v.toString(16).padStart(2, '0'); // v em hex, 2 dígito
+
       
       // Obter endereço da conta para validação
       const addressResult = await this.ledgerApp.getAddress("44'/60'/0'/0/0");
@@ -336,8 +339,8 @@ export class BlockchainService {
       console.log('Endereço:', addressResult.address);
       
       return {
-        signature: result.signature,
-        messageHash: messageHash,
+        signature,
+        messageHash,
         address: addressResult.address
       };
     } catch (error: any) {
