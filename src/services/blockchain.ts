@@ -1,5 +1,9 @@
 import { ethers } from 'ethers';
-import ERC20Contract from '../contracts/ERC20Token.json';
+import { Transaction } from 'ethers/transaction';
+
+import ERC20_ABI from '../contracts/ERC20Token.abi.json';
+import ERC20_BYTECODE_RAW from '../contracts/ERC20Token.bin?raw';
+const ERC20_BYTECODE = '0x' + ERC20_BYTECODE_RAW.trim();
 
 // Lazy imports for Ledger libraries to avoid Buffer issues
 let TransportWebHID: any;
@@ -32,8 +36,8 @@ export interface NetworkConfig {
 export interface ERC20Token {
   name: string;
   symbol: string;
-  decimals: number;
-  totalSupply: string;
+  decimals?: number;
+  totalSupply?: string;
 }
 
 export interface WalletInfo {
@@ -73,6 +77,17 @@ export const NETWORKS: Record<string, NetworkConfig> = {
 // Classe principal para gerenciar blockchain
 export class BlockchainService {
   private provider: ethers.JsonRpcProvider | null = null;
+
+  /**
+   * Permite definir manualmente um novo provider (ex: custom RPC)
+   * @param rpcUrl string
+   */
+  private customRpcUrl: string | null = null;
+
+  setProvider(rpcUrl: string) {
+    this.customRpcUrl = rpcUrl;
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+  }
   private ledgerApp: any = null;
   private transport: any = null;
   private currentNetwork: NetworkConfig = NETWORKS.polygon;
@@ -173,18 +188,33 @@ export class BlockchainService {
     }
 
     this.currentNetwork = NETWORKS[networkKey];
-    
+
     if (this.walletInfo.isConnected) {
-      this.provider = new ethers.JsonRpcProvider(this.currentNetwork.rpcUrl);
-      
+      // Se há um RPC customizado, nunca sobrescreve
+      if (!this.customRpcUrl) {
+        this.provider = new ethers.JsonRpcProvider(this.currentNetwork.rpcUrl);
+      }
       // Atualizar saldo para nova rede
-      const balance = await this.provider.getBalance(this.walletInfo.address);
+      const balance = await this.provider!.getBalance(this.walletInfo.address);
       this.walletInfo.balance = ethers.formatEther(balance);
     }
   }
 
   // Obter rede atual
   getCurrentNetwork(): NetworkConfig {
+    if (this.customRpcUrl) {
+      // Garante que o provider está sempre sincronizado com o customRpcUrl
+      // ethers v6: _connection.url é o endpoint do provider
+      if (!this.provider || (this.provider as any)._connection?.url !== this.customRpcUrl) {
+        this.setProvider(this.customRpcUrl);
+      }
+      return {
+        name: 'Custom RPC',
+        chainId: this.currentNetwork.chainId, // Mantém o chainId da rede base
+        rpcUrl: this.customRpcUrl,
+        explorerUrl: this.currentNetwork.explorerUrl
+      };
+    }
     return this.currentNetwork;
   }
 
@@ -195,28 +225,49 @@ export class BlockchainService {
     }
 
     try {
-      // Usar o bytecode do contrato compilado
+      // Garantir que o bytecode está como string hexadecimal
+      let bytecode = ERC20_BYTECODE;
+      if (typeof bytecode !== 'string') {
+        throw new Error('Bytecode do contrato inválido');
+      }
+      if (!bytecode.startsWith('0x')) {
+        bytecode = '0x' + bytecode;
+      }
       const factory = new ethers.ContractFactory(
-        ERC20Contract.abi,
-        ERC20Contract.bytecode,
+        ERC20_ABI,
+        bytecode,
         this.provider
       );
       
       // Criar transação de deploy
       const deployTx = await factory.getDeployTransaction(
         tokenData.name,
-        tokenData.symbol,
-        tokenData.decimals,
-        tokenData.totalSupply
+        tokenData.symbol
       );
 
-      // Obter nonce e gas price
-      const nonce = await this.provider.getTransactionCount(this.walletInfo.address);
+      // Forçar tipo EIP-1559 e chainId
+      deployTx.type = 2;
+      if (!deployTx.chainId) deployTx.chainId = BigInt(this.currentNetwork.chainId);
+
+      // Obter dados de fee/gas
       const feeData = await this.provider.getFeeData();
-      
+
+      // EIP-1559 exige maxFeePerGas e maxPriorityFeePerGas
+      if (!deployTx.maxFeePerGas) {
+        deployTx.maxFeePerGas = feeData.maxFeePerGas || feeData.gasPrice || BigInt(20000000000);
+      }
+      if (!deployTx.maxPriorityFeePerGas) {
+        deployTx.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas || BigInt(1000000000);
+      }
+      // Remover gasPrice se type 2
+      if (deployTx.type === 2 && 'gasPrice' in deployTx) {
+        delete deployTx.gasPrice;
+      }
+
+      // Obter nonce
+      const nonce = await this.provider.getTransactionCount(this.walletInfo.address);
       deployTx.nonce = nonce;
       deployTx.gasLimit = BigInt(3000000); // Gas limit para deploy
-      deployTx.gasPrice = feeData.gasPrice || BigInt(20000000000); // 20 gwei default
 
       // Assinar com Ledger
       const signedTx = await this.signTransaction(deployTx);
@@ -232,7 +283,7 @@ export class BlockchainService {
       console.error('Erro ao fazer deploy do token:', error);
       throw new Error(`Falha ao fazer deploy do contrato ERC-20: ${error.message || 'Erro desconhecido'}`);
     }
-  }
+    }
 
   // Assinar transação
   async signTransaction(transaction: any): Promise<string> {
@@ -241,20 +292,26 @@ export class BlockchainService {
     }
 
     try {
-      // Serializar transação usando ethers
-      const serializedTx = ethers.Transaction.from(transaction).unsignedSerialized;
-      
+      // Remover campo signature se existir
+      if (transaction.signature) delete transaction.signature;
+
+      // Serializar transação EIP-1559 (type 2)
+  const serializedTx = Transaction.from(transaction).unsignedSerialized;
+
       // Assinar com Ledger
       const signature = await this.ledgerApp.signTransaction(
         "44'/60'/0'/0/0",
         serializedTx
       );
-      
-      // Adicionar assinatura à transação
-      transaction.signature = signature;
-      
-      // Serializar transação assinada
-      return ethers.Transaction.from(transaction).serialized;
+
+      // Montar a transação assinada
+      const sig = {
+        v: parseInt(signature.v, 16),
+        r: '0x' + signature.r,
+        s: '0x' + signature.s
+      };
+  const signedTx = Transaction.from({ ...transaction, signature: sig }).serialized;
+      return signedTx;
     } catch (error: any) {
       console.error('Erro ao assinar transação:', error);
       throw new Error(`Falha ao assinar transação: ${error.message || 'Erro desconhecido'}`);

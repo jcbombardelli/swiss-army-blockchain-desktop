@@ -1,7 +1,23 @@
 <script setup lang="ts">
+// Testar conexão do endpoint RPC customizado
+async function testCustomRpc() {
+  if (!rpcEndpoint.value || rpcEndpoint.value.trim().length === 0) {
+    alert('Preencha o endpoint RPC para testar.');
+    return;
+  }
+  try {
+    // Instanciar provider diretamente
+    const { ethers } = await import('ethers');
+    const testProvider = new ethers.JsonRpcProvider(rpcEndpoint.value.trim());
+    const net = await testProvider.getNetwork();
+    alert(`Conexão bem-sucedida! ChainId: ${net.chainId}`);
+  } catch (e: any) {
+    alert('Falha ao conectar ao endpoint RPC. Verifique a URL.');
+  }
+}
 import { ref, reactive, onMounted } from "vue";
-import { blockchainService, type ERC20Token, type NetworkConfig } from "./services/blockchain";
-import { settingsService, type AppSettings } from "./services/settings";
+import { blockchainService, type ERC20Token } from "./services/blockchain";
+import { settingsService } from "./services/settings";
 
 // Estados para controlar as telas
 const currentView = ref('main');
@@ -16,7 +32,7 @@ const erc20Form = reactive<ERC20Token>({
   name: '',
   symbol: '',
   decimals: 18,
-  totalSupply: '1000000'
+  totalSupply: '0'
 });
 
 const messageToSign = ref('');
@@ -224,6 +240,13 @@ function saveSettings() {
     walletAddress: walletAddress.value,
     lastConnected: isConnected.value ? Date.now() : 0
   });
+  // Se o usuário definiu um endpoint customizado, setar o provider manualmente
+  if (rpcEndpoint.value && rpcEndpoint.value.trim().length > 0) {
+    blockchainService.setProvider(rpcEndpoint.value.trim());
+  } else {
+    // Se limpar o campo, volta para o padrão da rede selecionada
+    blockchainService.setProvider(blockchainService.getCurrentNetwork().rpcUrl);
+  }
 }
 
 // Salvar configurações quando a wallet conectar
@@ -274,41 +297,41 @@ function resetSettings() {
 
 // Função de diagnóstico
 async function runDiagnostics() {
-  try {
-    isLoading.value = true;
-    error.value = '';
-    
-    const diagnostics = {
-      ledgerAvailable: false,
-      connectionActive: false,
-      ethereumAppOpen: false,
-      lastError: ''
-    };
-    
-    // Verificar se Ledger está disponível
     try {
-      diagnostics.ledgerAvailable = await blockchainService.isLedgerAvailable();
-    } catch (e) {
-      diagnostics.lastError = e.message;
-    }
-    
-    // Verificar se está conectado
-    if (isConnected.value) {
+      isLoading.value = true;
+      error.value = '';
+      
+      const diagnostics = {
+        ledgerAvailable: false,
+        connectionActive: false,
+        ethereumAppOpen: false,
+        lastError: ''
+      };
+      
+      // Verificar se Ledger está disponível
       try {
-        diagnostics.connectionActive = await blockchainService.isConnectionActive();
-      } catch (e) {
-        diagnostics.lastError = e.message;
+        diagnostics.ledgerAvailable = await blockchainService.isLedgerAvailable();
+      } catch (e: any) {
+        diagnostics.lastError = e?.message || String(e);
       }
       
-      // Verificar se app Ethereum está aberta
-      if (diagnostics.connectionActive) {
+      // Verificar se está conectado
+      if (isConnected.value) {
         try {
-          diagnostics.ethereumAppOpen = await blockchainService.checkEthereumApp();
-        } catch (e) {
-          diagnostics.lastError = e.message;
+          diagnostics.connectionActive = await blockchainService.isConnectionActive();
+        } catch (e: any) {
+          diagnostics.lastError = e?.message || String(e);
+        }
+        
+        // Verificar se app Ethereum está aberta
+        if (diagnostics.connectionActive) {
+          try {
+            diagnostics.ethereumAppOpen = await blockchainService.checkEthereumApp();
+          } catch (e: any) {
+            diagnostics.lastError = e?.message || String(e);
+          }
         }
       }
-    }
     
     // Mostrar resultados
     const results = `
@@ -438,23 +461,6 @@ onMounted(async () => {
               placeholder="Ex: MTK" 
             />
           </div>
-          <div class="input-group">
-            <label>Decimais:</label>
-            <input 
-              type="number" 
-              v-model.number="erc20Form.decimals"
-              min="0" 
-              max="18"
-            />
-          </div>
-          <div class="input-group">
-            <label>Supply Inicial:</label>
-            <input 
-              type="text" 
-              v-model="erc20Form.totalSupply"
-              placeholder="1000000" 
-            />
-          </div>
           
           <!-- Mensagem de erro específica -->
           <div v-if="error" class="error-message">
@@ -563,18 +569,37 @@ onMounted(async () => {
               <option value="polygon">Polygon</option>
               <option value="bsc">BSC</option>
               <option value="arbitrum">Arbitrum</option>
+              <option value="custom">Custom RPC</option>
             </select>
             <p class="setting-description">Selecione a rede blockchain para suas transações</p>
           </div>
           
           <div class="setting-group">
-            <h3>RPC Endpoint Personalizado</h3>
-            <input 
-              type="text" 
-              v-model="rpcEndpoint"
-              placeholder="https://mainnet.infura.io/v3/..." 
-            />
-            <p class="setting-description">Endpoint RPC personalizado (opcional)</p>
+            <h3>Custom RPC</h3>
+            <div v-if="selectedNetwork === 'custom'" style="display: flex; gap: 8px; align-items: center;">
+              <input 
+                type="text" 
+                v-model="rpcEndpoint"
+                placeholder="https://mainnet.infura.io/v3/..." 
+                style="flex: 1;"
+              />
+              <button @click="testCustomRpc" class="btn-secondary" style="white-space:nowrap;">Testar RPC</button>
+            </div>
+            <p class="setting-description">Selecione 'Custom RPC' acima para usar um endpoint personalizado</p>
+// Testar conexão do endpoint RPC customizado
+async function testCustomRpc() {
+  if (!rpcEndpoint.value || rpcEndpoint.value.trim().length === 0) {
+    alert('Preencha o endpoint RPC para testar.');
+    return;
+  }
+  try {
+    const testProvider = new blockchainService.provider.constructor(rpcEndpoint.value.trim());
+    const net = await testProvider.getNetwork();
+    alert(`Conexão bem-sucedida! ChainId: ${net.chainId}`);
+  } catch (e) {
+    alert('Falha ao conectar ao endpoint RPC. Verifique a URL.');
+  }
+}
           </div>
           
           <div class="setting-group">
